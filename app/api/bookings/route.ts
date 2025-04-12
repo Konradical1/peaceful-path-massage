@@ -1,112 +1,77 @@
-import { prisma } from "@/lib/prisma"
-import { type NextRequest, NextResponse } from "next/server"
-import { z } from "zod"
+import { NextResponse } from 'next/server'
+import { redis } from '@/lib/redis'
+import { Ratelimit } from '@upstash/ratelimit'
+import { headers } from 'next/headers'
 
-// Schema for booking creation
-const bookingSchema = z.object({
-  serviceId: z.string(),
-  durationId: z.string(),
-  startsAt: z.string().transform((val) => new Date(val)),
-  userId: z.string().optional(),
+const ratelimit = new Ratelimit({
+  redis,
+  limiter: Ratelimit.slidingWindow(5, '1 m'),
 })
 
-export async function POST(request: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const body = await request.json()
-
-    // Validate request body
-    const validatedData = bookingSchema.parse(body)
-
-    // Get the duration to calculate end time
-    const duration = await prisma.duration.findUnique({
-      where: { id: validatedData.durationId },
-    })
-
-    if (!duration) {
-      return NextResponse.json({ error: "Invalid duration selected" }, { status: 400 })
+    const headersList = await headers()
+    const ip = headersList.get('x-forwarded-for') ?? '127.0.0.1'
+    const { success } = await ratelimit.limit(ip)
+    
+    if (!success) {
+      return NextResponse.json(
+        { error: 'Too many requests. Please try again later.' },
+        { status: 429 }
+      )
     }
 
-    // Calculate end time
-    const endsAt = new Date(validatedData.startsAt)
-    endsAt.setMinutes(endsAt.getMinutes() + duration.minutes)
+    const body = await req.json()
+    const { name, email, phone, service, date, time, duration } = body
 
-    // Check for overlapping bookings
-    const overlappingBookings = await prisma.booking.findMany({
-      where: {
-        OR: [
-          {
-            startsAt: { lt: endsAt },
-            endsAt: { gt: validatedData.startsAt },
-          },
-        ],
-        status: { in: ["PENDING", "CONFIRMED"] },
-      },
-    })
-
-    if (overlappingBookings.length > 0) {
-      return NextResponse.json({ error: "This time slot is already booked" }, { status: 409 })
+    if (!name || !email || !phone || !service || !date || !time || !duration) {
+      return NextResponse.json(
+        { error: 'Missing required fields' },
+        { status: 400 }
+      )
     }
 
-    // Create the booking
-    const booking = await prisma.booking.create({
-      data: {
-        serviceId: validatedData.serviceId,
-        durationId: validatedData.durationId,
-        startsAt: validatedData.startsAt,
-        endsAt,
-        userId: validatedData.userId,
-        status: "CONFIRMED", // Auto-confirm for now
-      },
-    })
+    const booking = {
+      id: crypto.randomUUID(),
+      name,
+      email,
+      phone,
+      service,
+      date,
+      time,
+      duration,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }
 
-    return NextResponse.json(booking, { status: 201 })
+    await redis.hset(`booking:${booking.id}`, booking)
+
+    return NextResponse.json({ success: true, booking })
   } catch (error) {
-    console.error("Error creating booking:", error)
-
-    if (error instanceof z.ZodError) {
-      return NextResponse.json({ error: "Invalid booking data", details: error.errors }, { status: 400 })
-    }
-
-    return NextResponse.json({ error: "Failed to create booking" }, { status: 500 })
+    console.error('Booking error:', error)
+    return NextResponse.json(
+      { error: 'Failed to create booking' },
+      { status: 500 }
+    )
   }
 }
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    // In a real app, you'd get the user ID from the session
-    const userId = request.nextUrl.searchParams.get("userId")
+    const bookings = await redis.keys('booking:*')
+    const bookingData = await Promise.all(
+      bookings.map(async (key) => {
+        const booking = await redis.hgetall(key)
+        return booking
+      })
+    )
 
-    if (!userId) {
-      return NextResponse.json({ error: "User ID is required" }, { status: 400 })
-    }
-
-    const bookings = await prisma.booking.findMany({
-      where: {
-        userId,
-      },
-      include: {
-        service: true,
-        duration: true,
-      },
-      orderBy: {
-        startsAt: "desc",
-      },
-    })
-
-    // Transform the data to match the expected format
-    const formattedBookings = bookings.map((booking) => ({
-      id: booking.id,
-      serviceName: booking.service.name,
-      durationMinutes: booking.duration.minutes,
-      price: booking.duration.priceCents / 100, // Convert cents to dollars
-      startsAt: booking.startsAt,
-      endsAt: booking.endsAt,
-      status: booking.status,
-    }))
-
-    return NextResponse.json(formattedBookings)
+    return NextResponse.json({ bookings: bookingData })
   } catch (error) {
-    console.error("Error fetching bookings:", error)
-    return NextResponse.json({ error: "Failed to fetch bookings" }, { status: 500 })
+    console.error('Error fetching bookings:', error)
+    return NextResponse.json(
+      { error: 'Failed to fetch bookings' },
+      { status: 500 }
+    )
   }
 }

@@ -51,7 +51,7 @@ export default function Header() {
 
             {/* Book Now Button */}
             <Button asChild className="bg-transparent border-2 border-teal-600 text-teal-600 hover:bg-teal-50 rounded-none px-6 py-2 tracking-wide font-cormorant text-lg">
-              <Link href="/booking">Book Now</Link>
+              <Link href="/book">Book Now</Link>
             </Button>
           </div>
 
@@ -90,14 +90,14 @@ export default function Header() {
                 Blog
               </Link>
               <Link
-                href="/booking"
+                href="/book"
                 className="font-cormorant text-lg text-gray-600 hover:text-teal-600 py-2"
                 onClick={() => setIsMenuOpen(false)}
               >
                 Book Now
               </Link>
               <Button asChild className="bg-transparent border-2 border-teal-600 text-teal-600 hover:bg-teal-50 rounded-none py-2 tracking-wide font-cormorant text-lg w-full mt-2">
-                <Link href="/booking" onClick={() => setIsMenuOpen(false)}>
+                <Link href="/book" onClick={() => setIsMenuOpen(false)}>
                   Book an Appointment
                 </Link>
               </Button>
